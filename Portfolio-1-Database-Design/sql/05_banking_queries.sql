@@ -97,3 +97,45 @@ JOIN account_types at
     ON a.account_type_id = at.account_type_id
 ORDER BY
     balance_rank;
+
+
+---- Query 6: Calculate the monthly transaction volume and value for each transaction type. The results are grouped by month and transaction type, ordered by month and transaction type.
+
+    SELECT
+    DATE_TRUNC('month', t.transaction_date)::date AS transaction_month,
+    tt.type_name AS transaction_type,
+    COUNT(t.transaction_id) AS total_transactions,
+    SUM(t.amount) AS total_value
+FROM transactions t
+JOIN transaction_types tt
+    ON t.transaction_type_id = tt.transaction_type_id
+WHERE t.status = 'completed'
+GROUP BY
+    DATE_TRUNC('month', t.transaction_date),
+    tt.type_name
+ORDER BY
+    transaction_month,
+    transaction_type;
+
+
+--- Query 7: Identify customers who have not made any transactions in the last 6 months. The results include customer name, email, and the date of their last transaction, ordered by the last transaction date.
+
+    SELECT
+    a.account_number,
+    c.first_name || ' ' || c.last_name AS customer_name,
+    at.type_name AS account_type,
+    a.balance,
+    a.status
+FROM accounts a
+JOIN customers c
+    ON a.customer_id = c.customer_id
+JOIN account_types at
+    ON a.account_type_id = at.account_type_id
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM transactions t
+    WHERE t.source_account_id = a.account_id
+       OR t.destination_account_id = a.account_id
+)
+ORDER BY
+    customer_name;
