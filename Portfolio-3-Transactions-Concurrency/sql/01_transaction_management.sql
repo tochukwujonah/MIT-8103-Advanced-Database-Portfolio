@@ -138,25 +138,38 @@ ORDER BY account_id;
 
 BEGIN;
 
--- Debit Account A
 UPDATE transaction_lab_accounts
 SET balance = balance - 10000
 WHERE account_id = 1
   AND balance >= 10000;
 
--- Credit Account B
+DO $$
+BEGIN
+    IF NOT FOUND THEN
+        RAISE EXCEPTION
+            'Debit failed: insufficient funds or account missing';
+    END IF;
+END;
+$$;
+
 UPDATE transaction_lab_accounts
 SET balance = balance + 10000
 WHERE account_id = 2;
 
--- Verify the resulting total
-SELECT
-    SUM(balance) AS total_balance
+DO $$
+BEGIN
+    IF NOT FOUND THEN
+        RAISE EXCEPTION
+            'Credit failed: destination account missing';
+    END IF;
+END;
+$$;
+
+SELECT SUM(balance) AS total_balance
 FROM transaction_lab_accounts;
 
 COMMIT;
 
--- Verify final balances
 SELECT *
 FROM transaction_lab_accounts
 ORDER BY account_id;
@@ -176,10 +189,15 @@ RETURNS TEXT
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    v_locked_count INTEGER;
+    v_account_id INTEGER;
     v_from_balance NUMERIC(18,2);
 BEGIN
+
     -- Validate transfer details
+    IF p_from_account IS NULL OR p_to_account IS NULL THEN
+        RAISE EXCEPTION 'Account IDs cannot be NULL';
+    END IF;
+
     IF p_amount IS NULL OR p_amount <= 0 THEN
         RAISE EXCEPTION 'Transfer amount must be greater than zero';
     END IF;
@@ -188,20 +206,31 @@ BEGIN
         RAISE EXCEPTION 'Source and destination accounts must differ';
     END IF;
 
-    -- Lock both accounts in a consistent order
-    PERFORM account_id
-    FROM transaction_lab_accounts
-    WHERE account_id IN (p_from_account, p_to_account)
-    ORDER BY account_id
-    FOR UPDATE;
+    -- Lock both accounts in ascending ID order
+    FOR v_account_id IN
+        SELECT account_id
+        FROM transaction_lab_accounts
+        WHERE account_id IN (p_from_account, p_to_account)
+        ORDER BY account_id
+    LOOP
 
-    GET DIAGNOSTICS v_locked_count = ROW_COUNT;
+        PERFORM 1
+        FROM transaction_lab_accounts
+        WHERE account_id = v_account_id
+        FOR UPDATE;
 
-    IF v_locked_count <> 2 THEN
+    END LOOP;
+
+    -- Confirm that both accounts exist
+    IF (
+        SELECT COUNT(*)
+        FROM transaction_lab_accounts
+        WHERE account_id IN (p_from_account, p_to_account)
+    ) <> 2 THEN
         RAISE EXCEPTION 'One or both accounts do not exist';
     END IF;
 
-    -- Check the source account balance
+    -- Check source account balance
     SELECT balance
     INTO v_from_balance
     FROM transaction_lab_accounts
@@ -225,3 +254,265 @@ BEGIN
 
 END;
 $$;
+
+
+-- =====================================================
+-- PORTFOLIO 3: READ COMMITTED ISOLATION
+-- SESSION 1
+-- =====================================================
+
+BEGIN;
+
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+
+-- Update Account A without committing
+UPDATE transaction_lab_accounts
+SET balance = 60000
+WHERE account_id = 1;
+
+-- Session 1 sees its own uncommitted update
+SELECT *
+FROM transaction_lab_accounts
+WHERE account_id = 1;
+
+-- Keep transaction open until Session 2 performs its first read
+
+COMMIT;
+
+
+-- =====================================================
+-- PORTFOLIO 3: READ COMMITTED ISOLATION
+-- SESSION 2
+-- =====================================================
+
+BEGIN;
+
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+
+-- Should see the previously committed balance
+SELECT *
+FROM transaction_lab_accounts
+WHERE account_id = 1;
+
+-- Run this again after Session 1 commits
+SELECT *
+FROM transaction_lab_accounts
+WHERE account_id = 1;
+
+COMMIT;
+
+
+-- =====================================================
+-- PORTFOLIO 3: REPEATABLE READ ISOLATION
+-- SESSION 2
+-- =====================================================
+
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+
+-- Establish the transaction snapshot
+SELECT *
+FROM transaction_lab_accounts
+WHERE account_id = 1;
+
+-- Keep the transaction open
+
+
+-- =====================================================
+-- PORTFOLIO 3: REPEATABLE READ ISOLATION
+-- SESSION 1
+-- =====================================================
+
+BEGIN;
+
+UPDATE transaction_lab_accounts
+SET balance = 55000
+WHERE account_id = 1;
+
+COMMIT;
+
+-- Repeat the read within the original transaction
+SELECT *
+FROM transaction_lab_accounts
+WHERE account_id = 1;
+
+COMMIT;
+
+-- =====================================================
+-- PORTFOLIO 3: ROW-LEVEL LOCKING
+-- SESSION 1
+-- =====================================================
+
+BEGIN;
+
+SELECT *
+FROM transaction_lab_accounts
+WHERE account_id = 1
+FOR UPDATE;
+
+-- Keep transaction open while Session 2 attempts its update
+
+COMMIT;
+
+
+-- =====================================================
+-- PORTFOLIO 3: ROW-LEVEL LOCKING
+-- SESSION 2
+-- =====================================================
+
+BEGIN;
+
+UPDATE transaction_lab_accounts
+SET balance = balance - 5000
+WHERE account_id = 1;
+
+COMMIT;
+
+
+-- =====================================================
+-- PORTFOLIO 3: DEADLOCK DEMONSTRATION
+-- SESSION 1
+-- =====================================================
+
+BEGIN;
+
+SELECT *
+FROM transaction_lab_accounts
+WHERE account_id = 1
+FOR UPDATE;
+
+-- After Session 2 locks Account B, run:
+SELECT *
+FROM transaction_lab_accounts
+WHERE account_id = 2
+FOR UPDATE;
+
+
+
+-- =====================================================
+-- PORTFOLIO 3: DEADLOCK DEMONSTRATION
+-- SESSION 2
+-- =====================================================
+
+BEGIN;
+
+SELECT *
+FROM transaction_lab_accounts
+WHERE account_id = 2
+FOR UPDATE;
+
+-- After Session 1 requests Account B, run:
+SELECT *
+FROM transaction_lab_accounts
+WHERE account_id = 1
+FOR UPDATE;
+
+
+-- =====================================================
+-- PORTFOLIO 3: CONSISTENT LOCK ORDERING
+-- =====================================================
+
+BEGIN;
+
+SELECT *
+FROM transaction_lab_accounts
+WHERE account_id IN (1, 2)
+ORDER BY account_id
+FOR UPDATE;
+
+SELECT *
+FROM transaction_lab_accounts
+ORDER BY account_id;
+
+COMMIT;
+
+
+-- =====================================================
+-- PORTFOLIO 3: SUCCESSFUL TRANSFER TEST
+-- =====================================================
+
+BEGIN;
+
+SELECT transfer_lab_funds(1, 2, 10000.00);
+
+COMMIT;
+
+-- Verify account balances
+SELECT *
+FROM transaction_lab_accounts
+ORDER BY account_id;
+
+
+
+-- =====================================================
+-- PORTFOLIO 3: FAILED TRANSFER TEST
+-- =====================================================
+
+BEGIN;
+
+SELECT transfer_lab_funds(1, 2, 100000.00);
+
+-- Expected: Insufficient funds
+-- The error aborts this transaction.
+
+ROLLBACK;
+
+-- Verify that balances remain unchanged
+SELECT *
+FROM transaction_lab_accounts
+ORDER BY account_id;
+
+
+-- =====================================================
+-- PORTFOLIO 3: SERIALIZABLE ISOLATION
+-- TEST TABLE
+-- =====================================================
+
+DROP TABLE IF EXISTS on_call_doctors;
+
+CREATE TABLE on_call_doctors (
+    doctor_id INTEGER PRIMARY KEY,
+    doctor_name VARCHAR(100) NOT NULL,
+    is_on_call BOOLEAN NOT NULL
+);
+
+INSERT INTO on_call_doctors
+VALUES
+(1, 'Doctor A', TRUE),
+(2, 'Doctor B', TRUE);
+
+SELECT *
+FROM on_call_doctors
+ORDER BY doctor_id;
+
+
+BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+
+SELECT COUNT(*)
+FROM on_call_doctors
+WHERE is_on_call = TRUE;
+
+UPDATE on_call_doctors
+SET is_on_call = FALSE
+WHERE doctor_id = 1;
+
+-- Commit after Session 2 has performed its update
+COMMIT;
+
+
+BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+
+SELECT COUNT(*)
+FROM on_call_doctors
+WHERE is_on_call = TRUE;
+
+UPDATE on_call_doctors
+SET is_on_call = FALSE
+WHERE doctor_id = 2;
+
+-- Attempt to commit after Session 1 commits
+COMMIT;
+
+
+SELECT *
+FROM on_call_doctors
+ORDER BY doctor_id;

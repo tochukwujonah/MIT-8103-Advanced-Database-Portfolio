@@ -1,0 +1,2 @@
+Database: nairabridge_nosql
+Collection: transaction_activity
