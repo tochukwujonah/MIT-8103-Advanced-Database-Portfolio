@@ -1,11 +1,4 @@
 
-mermaidDiagram
-    CUSTOMERS ||--o{ ACCOUNTS : owns
-    ACCOUNT_TYPES ||--o{ ACCOUNTS : classifies
-    ACCOUNTS ||--o{ TRANSACTIONS : source_account
-    ACCOUNTS ||--o{ TRANSACTIONS : destination_account
-    TRANSACTION_TYPES ||--o{ TRANSACTIONS : categorises
-    CUSTOMERS o|--o{ AUDIT_LOGS : associated_with
 
     CUSTOMERS {
         bigint customer_id PK
